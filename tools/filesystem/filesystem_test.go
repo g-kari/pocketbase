@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -903,6 +904,72 @@ func TestFileSystemCreateThumb(t *testing.T) {
 
 			if attrsMimeType != s.expectedMimeType {
 				t.Fatalf("Expected thumb attrs %s MimeType %q, got %q", s.thumb, s.expectedMimeType, attrsMimeType)
+			}
+		})
+	}
+}
+
+func TestFileSystemCreateThumbLosslessWebP(t *testing.T) {
+	scenarios := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "single_huffman_group",
+			// Tiny 1x1 opaque black VP8L image with no transforms or color cache.
+			data: []byte{82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 9, 0, 0, 0, 47, 0, 0, 0, 0, 136, 136, 254, 7, 0},
+		},
+		{
+			name: "unused_huffman_group",
+			// Same pixel with two trivial groups; only the second group is referenced.
+			data: []byte{82, 73, 70, 70, 28, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 16, 0, 0, 0, 47, 0, 0, 0, 0, 132, 140, 232, 127, 68, 68, 255, 35, 34, 250, 31},
+		},
+	}
+
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			original, format, err := image.Decode(bytes.NewReader(s.data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if format != "webp" || original.Bounds() != image.Rect(0, 0, 1, 1) {
+				t.Fatalf("Unexpected fixture format %q or bounds %v", format, original.Bounds())
+			}
+			if pixel := color.NRGBAModel.Convert(original.At(0, 0)); pixel != (color.NRGBA{A: 255}) {
+				t.Fatalf("Unexpected fixture pixel %v", pixel)
+			}
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "original.webp"), s.data, 0644); err != nil {
+				t.Fatal(err)
+			}
+			fsys, err := filesystem.NewLocal(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer fsys.Close()
+
+			if err := fsys.CreateThumb("original.webp", "thumb.png", "2x2"); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := fsys.GetReader("thumb.png")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			thumb, format, err := image.Decode(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if format != "png" || reader.ContentType() != "image/png" || thumb.Bounds() != image.Rect(0, 0, 2, 2) {
+				t.Fatalf("Unexpected thumb format %q, content type %q, or bounds %v", format, reader.ContentType(), thumb.Bounds())
+			}
+			for y := 0; y < 2; y++ {
+				for x := 0; x < 2; x++ {
+					if pixel := color.NRGBAModel.Convert(thumb.At(x, y)); pixel != (color.NRGBA{A: 255}) {
+						t.Fatalf("Unexpected thumb pixel at (%d,%d): %v", x, y, pixel)
+					}
+				}
 			}
 		})
 	}
